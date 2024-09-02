@@ -5,12 +5,14 @@ namespace Eduardokum\LaravelBoleto\Boleto;
 use Exception;
 use Throwable;
 use Carbon\Carbon;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use chillerlan\QRCode\QRCode;
 use chillerlan\QRCode\QROptions;
 use Eduardokum\LaravelBoleto\Util;
 use chillerlan\QRCode\Data\QRMatrix;
 use Eduardokum\LaravelBoleto\MagicTrait;
+use Eduardokum\LaravelBoleto\NotaFiscal;
 use chillerlan\QRCode\Output\QROutputInterface;
 use Eduardokum\LaravelBoleto\Boleto\Render\Pdf;
 use Eduardokum\LaravelBoleto\Boleto\Render\Html;
@@ -19,6 +21,7 @@ use Eduardokum\LaravelBoleto\Contracts\Boleto\Boleto;
 use Eduardokum\LaravelBoleto\Exception\ValidationException;
 use Eduardokum\LaravelBoleto\Contracts\Pessoa as PessoaContract;
 use Eduardokum\LaravelBoleto\Contracts\Boleto\Boleto as BoletoContract;
+use Eduardokum\LaravelBoleto\Contracts\NotaFiscal as NotaFiscalContract;
 
 /**
  * Class AbstractBoleto
@@ -97,6 +100,13 @@ abstract class AbstractBoleto implements BoletoContract
     public $multa = 0;
 
     /**
+     * Valor para mora multa
+     *
+     * @var float
+     */
+    public $multaApos = 0;
+
+    /**
      * Valor para mora juros
      *
      * @var float
@@ -116,6 +126,12 @@ abstract class AbstractBoleto implements BoletoContract
      * @var int
      */
     public $diasProtesto = 0;
+
+    /**
+     * Tipo de prostesto se dias úteis, dias corridos, não protestar
+     * @var int
+     */
+    public $tipoProtesto = 0;
 
     /**
      * Dias para baixa automática
@@ -284,6 +300,13 @@ abstract class AbstractBoleto implements BoletoContract
      * @var PessoaContract
      */
     public $pagador;
+
+    /**
+     * Notas fiscais vinculadas ao Boleto
+     *
+     * @var NotaFiscalContract[]
+     */
+    public $notasFiscais = [];
 
     /**
      * Entidade sacadora avalista
@@ -619,6 +642,58 @@ abstract class AbstractBoleto implements BoletoContract
     public function getBeneficiario()
     {
         return $this->beneficiario;
+    }
+
+    /**
+     * Add notas fiscais
+     *
+     * @param $notasFiscais
+     *
+     * @return AbstractBoleto
+     * @throws ValidationException
+     */
+    public function setNotasFiscais($notasFiscais)
+    {
+        $notasFiscais = Arr::get($notasFiscais, '0') ? $notasFiscais : [$notasFiscais];
+        foreach ($notasFiscais as $notaFiscal) {
+            Util::addNotaFiscal($this->notasFiscais, $notaFiscal);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Retorna as notas fiscais
+     *
+     * @return NotaFiscalContract[]
+     */
+    public function getNotasFiscais()
+    {
+        if (count($this->notasFiscais) == 0 && $this->chaveNfe) {
+            return [
+                new NotaFiscal([
+                    'chave' => $this->chaveNfe,
+                ]),
+            ];
+        }
+
+        return $this->notasFiscais;
+    }
+
+    /**
+     * Retorna a notas fiscal
+     *
+     * @return NotaFiscalContract
+     */
+    public function getNotaFiscal($indice)
+    {
+        if ($indice == 0 && count($this->notasFiscais) == 0 && $this->chaveNfe) {
+            return new NotaFiscal([
+                'chave' => $this->chaveNfe,
+            ]);
+        }
+
+        return optional(Arr::get($this->notasFiscais, $indice));
     }
 
     /**
@@ -984,6 +1059,10 @@ abstract class AbstractBoleto implements BoletoContract
      */
     public function getChaveNfe()
     {
+        if (count($this->notasFiscais) > 0) {
+            return Arr::first($this->getNotasFiscais())->getChave();
+        }
+
         if (strlen($this->chaveNfe) != 44) {
             return null;
         }
@@ -1373,6 +1452,31 @@ abstract class AbstractBoleto implements BoletoContract
     }
 
     /**
+     * Seta a quantidade de dias apos o vencimento que cobra a multa
+     *
+     * @param  int $multaApos
+     *
+     * @return AbstractBoleto
+     */
+    public function setMultaApos($multaApos)
+    {
+        $multaApos = (int) $multaApos;
+        $this->multaApos = $multaApos > 0 ? $multaApos : 0;
+
+        return $this;
+    }
+
+    /**
+     * Retorna a quantidade de dias apos o vencimento que cobra a multa
+     *
+     * @return int
+     */
+    public function getMultaApos()
+    {
+        return $this->multaApos;
+    }
+
+    /**
      * Seta dias para protesto
      *
      * @param int $diasProtesto
@@ -1405,6 +1509,38 @@ abstract class AbstractBoleto implements BoletoContract
     }
 
     /**
+     * Seta dias para protesto
+     * 0 = Não protestar, 1 = Dias corridos, 2 = Dias úteis, 3 = Negativar dias corridos, 4 = Não negativar
+     * @param int $tipoProtesto
+     *
+     * @return AbstractBoleto
+     * @throws \Exception
+     */
+    public function setTipoProtesto($tipoProtesto)
+    {
+        $tipoProtesto = (int)$tipoProtesto;
+        $this->tipoProtesto = $tipoProtesto > 0 ? $tipoProtesto : 0;
+
+        if (!empty($tipoProtesto) && $this->getDiasProtesto() == 0) {
+            throw new \Exception('Você deve informar dias de protesto se informar tipo de protesto');
+        }
+
+        return $this;
+    }
+
+    /**
+     * Retorna os diasProtesto
+     *
+     * @param int $default
+     *
+     * @return int
+     */
+    public function getTipoProtesto($default = 0)
+    {
+        return $this->tipoProtesto > 0 ? $this->tipoProtesto : $default;
+    }
+
+    /**
      * Seta os dias para baixa automática
      *
      * @param int $baixaAutomatica
@@ -1412,7 +1548,7 @@ abstract class AbstractBoleto implements BoletoContract
      */
     public function setDiasBaixaAutomatica($baixaAutomatica)
     {
-        $exception = sprintf('O banco %s não suporta baixa automática, pode usar também: setDiasProtesto(%s)', basename(get_class($this)), $baixaAutomatica);
+        $exception = sprintf('O banco %s não suporta baixa automática, pode usar também', basename(get_class($this)));
         throw new ValidationException($exception);
     }
 
@@ -2164,6 +2300,7 @@ abstract class AbstractBoleto implements BoletoContract
             'multa'               => Util::nReal($this->getMulta(), 2, false),
             'juros'               => Util::nReal($this->getJuros(), 2, false),
             'juros_apos'          => $this->getJurosApos(),
+            'multa_apos'          => $this->getMultaApos(),
             'dias_protesto'       => $this->getDiasProtesto(),
             'sacador_avalista'    => $this->getSacadorAvalista()
                 ? [
